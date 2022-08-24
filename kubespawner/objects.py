@@ -6,6 +6,7 @@ import ipaddress
 import json
 import operator
 import re
+import os
 from urllib.parse import urlparse
 
 from kubernetes_asyncio.client.models import (
@@ -934,13 +935,16 @@ def make_service(
         labels=(labels or {}).copy(),
         owner_references=owner_references,
     )
-
+    
+    driver_port = int(os.environ.get("SPARK_DRIVER_PORT", "2222"))
+    block_manager_port = int(os.environ.get("SPARK_BLOCK_MANAGER_PORT", "7777"))
+    
     service = V1Service(
         kind='Service',
         metadata=metadata,
         spec=V1ServiceSpec(
             type='ClusterIP',
-            ports=[V1ServicePort(name='http', port=port, target_port=port)],
+            ports=[V1ServicePort(name='http', port=port, target_port=port), V1ServicePort(name='driver', port=driver_port, target_port=driver_port), V1ServicePort(name='blockmanager', port=block_manager_port, target_port=block_manager_port)],
             selector={
                 'component': 'singleuser-server',
                 'hub.jupyter.org/servername': servername,
