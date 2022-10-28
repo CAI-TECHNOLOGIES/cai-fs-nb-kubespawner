@@ -1970,7 +1970,7 @@ class KubeSpawner(Spawner):
             self.port,
         )
 
-    async def get_pod_manifest(self):
+    async def get_pod_manifest(self, projects = []):
         """
         Make a pod manifest that will spawn current user's notebook pod.
         """
@@ -2019,6 +2019,16 @@ class KubeSpawner(Spawner):
             self._expand_all(self.extra_annotations)
         )
 
+        volumes = []
+        volume_mounts = []
+
+        volumes.extend(self.volumes)
+        volume_mounts.extend(self.volume_mounts)
+
+        for p in projects:
+            volumes.append({"name": p["id"].lower(), "persistent_volume_claim": {"claimName": p["id"].lower()}})
+            volume_mounts.append({"name": p["id"].lower(), "mount_path": f"/home/cai/{p['name']}"})
+
         return make_pod(
             name=self.pod_name,
             cmd=real_cmd,
@@ -2036,8 +2046,8 @@ class KubeSpawner(Spawner):
             container_security_context=csc,
             pod_security_context=psc,
             env=self.get_env(),
-            volumes=self._expand_all(self.volumes),
-            volume_mounts=self._expand_all(self.volume_mounts),
+            volumes=self._expand_all(volumes),
+            volume_mounts=self._expand_all(volume_mounts),
             working_dir=self.working_dir,
             labels=labels,
             annotations=annotations,
@@ -2108,7 +2118,7 @@ class KubeSpawner(Spawner):
             annotations=annotations,
         )
 
-    def get_pvc_manifest(self):
+    def get_pvc_manifest(self, name, storage_capacity):
         """
         Make a pvc manifest that will spawn current user's pvc.
         """
@@ -2122,11 +2132,11 @@ class KubeSpawner(Spawner):
         storage_selector = self._expand_all(self.storage_selector)
 
         return make_pvc(
-            name=self.pvc_name,
+            name=name,
             storage_class=self.storage_class,
             access_modes=self.storage_access_modes,
             selector=storage_selector,
-            storage=self.storage_capacity,
+            storage=storage_capacity,
             labels=labels,
             annotations=annotations,
         )
@@ -2437,14 +2447,14 @@ class KubeSpawner(Spawner):
             replace=replace,
         )
 
-    def start(self):
+    def start(self, additional_pvcs=[]):
         """Thin wrapper around self._start
 
         so we can hold onto a reference for the Future
         start returns, which we can use to terminate
         .progress()
         """
-        self._start_future = asyncio.ensure_future(self._start())
+        self._start_future = asyncio.ensure_future(self._start(additional_pvcs))
         return self._start_future
 
     _last_event = None
@@ -2609,7 +2619,7 @@ class KubeSpawner(Spawner):
         else:
             return True
 
-    async def _start(self):
+    async def _start(self, projects):
         """Start the user's pod"""
 
         # load user options (including profile)
@@ -2630,7 +2640,7 @@ class KubeSpawner(Spawner):
             self._last_event = events[-1]["metadata"]["uid"]
 
         if self.storage_pvc_ensure:
-            pvc = self.get_pvc_manifest()
+            pvc = self.get_pvc_manifest(self.pvc_name, self.storage_capacity)
 
             # If there's a timeout, just let it propagate
             await exponential_backoff(
@@ -2641,11 +2651,24 @@ class KubeSpawner(Spawner):
                 # Each req should be given k8s_api_request_timeout seconds.
                 timeout=self.k8s_api_request_retry_timeout,
             )
+            
+            for project in projects:
+
+                pvc = self.get_pvc_manifest(project["id"].lower(), project.get("storage_capacity", self.storage_capacity))
+                
+                await exponential_backoff(
+                partial(
+                    self._make_create_pvc_request, pvc, self.k8s_api_request_timeout
+                ),
+                f'Could not create PVC {project["id"].lower()}',
+                # Each req should be given k8s_api_request_timeout seconds.
+                timeout=self.k8s_api_request_retry_timeout,
+                )
 
         # If we run into a 409 Conflict error, it means a pod with the
         # same name already exists. We stop it, wait for it to stop, and
         # try again. We try 4 times, and if it still fails we give up.
-        pod = await self.get_pod_manifest()
+        pod = await self.get_pod_manifest(projects)
         if self.modify_pod_hook:
             pod = await gen.maybe_future(self.modify_pod_hook(self, pod))
 
