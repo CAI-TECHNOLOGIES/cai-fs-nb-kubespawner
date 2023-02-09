@@ -1970,7 +1970,7 @@ class KubeSpawner(Spawner):
             self.port,
         )
 
-    async def get_pod_manifest(self, additional_pvcs, project_id):
+    async def get_pod_manifest(self, additional_pvcs, project_conf):
         """
         Make a pod manifest that will spawn current user's notebook pod.
         """
@@ -2026,23 +2026,27 @@ class KubeSpawner(Spawner):
         volume_mounts.extend(self.volume_mounts)
 
         for pvc_conf in additional_pvcs:
-            volumes.append(
-                {
-                    "name": "claim-project-"+pvc_conf["id"].lower(),
-                    "persistent_volume_claim": {"claimName": "claim-project-"+pvc_conf["id"].lower()},
-                }
-            )
+            if pvc_conf["id"] != "everyones-playground":
+                volumes.append(
+                    {
+                        "name": "volume-"+pvc_conf["id"].lower(),
+                        "persistent_volume_claim": {"claimName": "claim-"+pvc_conf["id"].lower()},
+                    }
+                )
             volume_mounts.append(
                 {
-                    "name": "claim-project-"+pvc_conf["id"].lower(),
+                    "name": "volume-"+pvc_conf["id"].lower(),
                     "mount_path": pvc_conf.get(
                         "mount_path", f"/home/cai/{pvc_conf['name']}"
                     ),
+                    "sub_path": pvc_conf.get("sub_path", "")
                 }
             )
         
         for key in annotations.keys():
-            annotations[key] = annotations[key].replace("CAI_PROJECT_ID", project_id)
+            annotations[key] = annotations[key].replace("CAI_PROJECT_ID", project_conf["id"])
+
+        env = {**self.get_env(), **project_conf["additional_envs"]}
 
         return make_pod(
             name=self.pod_name,
@@ -2060,16 +2064,16 @@ class KubeSpawner(Spawner):
             allow_privilege_escalation=self.allow_privilege_escalation,
             container_security_context=csc,
             pod_security_context=psc,
-            env=self.get_env(),
+            env=env,
             volumes=self._expand_all(volumes),
             volume_mounts=self._expand_all(volume_mounts),
             working_dir=self.working_dir,
             labels=labels,
             annotations=annotations,
-            cpu_limit=self.cpu_limit,
-            cpu_guarantee=self.cpu_guarantee,
-            mem_limit=self.mem_limit,
-            mem_guarantee=self.mem_guarantee,
+            cpu_limit=project_conf["cpu_limit"],
+            cpu_guarantee=project_conf["cpu_guarantee"],
+            mem_limit=project_conf["mem_limit"],
+            mem_guarantee=project_conf["mem_guarantee"],
             extra_resource_limits=self.extra_resource_limits,
             extra_resource_guarantees=self.extra_resource_guarantees,
             lifecycle_hooks=self.lifecycle_hooks,
@@ -2462,14 +2466,14 @@ class KubeSpawner(Spawner):
             replace=replace,
         )
 
-    def start(self, additional_pvcs, project_id):
+    def start(self, additional_pvcs, project_conf):
         """Thin wrapper around self._start
 
         so we can hold onto a reference for the Future
         start returns, which we can use to terminate
         .progress()
         """
-        self._start_future = asyncio.ensure_future(self._start(additional_pvcs, project_id))
+        self._start_future = asyncio.ensure_future(self._start(additional_pvcs, project_conf))
         return self._start_future
 
     _last_event = None
@@ -2634,7 +2638,7 @@ class KubeSpawner(Spawner):
         else:
             return True
 
-    async def _start(self, additional_pvcs, project_id):
+    async def _start(self, additional_pvcs, project_conf):
         """Start the user's pod"""
 
         # load user options (including profile)
@@ -2670,7 +2674,7 @@ class KubeSpawner(Spawner):
             for pvc_conf in additional_pvcs:
 
                 pvc = self.get_pvc_manifest(
-                    "claim-project-"+pvc_conf["id"].lower(),
+                    "claim-"+pvc_conf["id"].lower(),
                     pvc_conf.get("storage_capacity", self.storage_capacity),
                 )
 
@@ -2686,7 +2690,7 @@ class KubeSpawner(Spawner):
         # If we run into a 409 Conflict error, it means a pod with the
         # same name already exists. We stop it, wait for it to stop, and
         # try again. We try 4 times, and if it still fails we give up.
-        pod = await self.get_pod_manifest(additional_pvcs, project_id)
+        pod = await self.get_pod_manifest(additional_pvcs, project_conf)
         if self.modify_pod_hook:
             pod = await gen.maybe_future(self.modify_pod_hook(self, pod))
 
