@@ -1,7 +1,5 @@
 pipeline {
-    agent {
-        label 'k8agent'
-    }
+    agent any
     options {
         skipStagesAfterUnstable()
     }
@@ -9,29 +7,23 @@ pipeline {
         stage('Clone repository') {
             steps {
                 script {
-                    container('build-agent') {
                         checkout scm
-                    }
                 }
             }
         }
         stage('Build docker image') {
             steps {
                 script {
-                    container('build-agent') {
                         app = docker.build('lib')
                     }
-                }
             }
         }
         stage('Store files') {
             steps {
                 script {
-                    container('build-agent') {
                         app.withRun(){ c ->
                             sh "docker cp ${c.id}:/cai-fs-nb-kubespawner/dist /base/build"
                         }
-                    }
                 }
             }
         }
